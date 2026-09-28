@@ -16,14 +16,22 @@ See [`docs/plan.md`](docs/plan.md) for the full architecture/reference
 doc, [`TODO.md`](TODO.md) for open work, and
 [`CHANGELOG.md`](CHANGELOG.md) for what's shipped in each release.
 
-**Status: v1.2.0.** Browse and download files out of PBS backups
+**What it does today:** browse and download files out of PBS backups
 (single file, or a `.zip`/`.tar.gz`/`.tar.zst` bundle), scrub across
-snapshots on a timeline, per-user PVE login, colour themes, and
-**restore straight back into a running guest** via `qemu-guest-agent`
-(single file, whole directories, and a faster Direct Network Transfer
-path for large content). Reads from one or more PBS storages. See
-`CHANGELOG.md` for the per-release detail and `TODO.md` for what's left
-(mostly optional performance work and restore-path refinements).
+snapshots on a timeline, per-user PVE login (password or SSO/OIDC),
+colour themes, and **restore straight back into a running guest** via
+`qemu-guest-agent` — single file, whole directories, "original
+location" auto-resolved from the item's own path (including Windows
+drive-letter display, matched to the guest's real disk/partition
+layout), and a faster Direct Network Transfer path (HTTPS by default)
+for large content. Reads from one or more PBS storages; a partition or
+LVM volume PVE's file-restore helper can't mount (e.g. a foreign
+filesystem, or a member of a Windows striped/mirrored volume) is
+hidden automatically rather than shown as a dead end. See
+`CHANGELOG.md` for the version-by-version detail and `TODO.md` for
+what's left (mostly optional performance work and restore-path
+refinements) — this section deliberately doesn't pin a version number,
+since that goes stale the moment the next release ships.
 
 Auth is per-user PVE ticket login — there's no shared service token.
 See "Provisioning access" below for how to grant a user access.
@@ -43,7 +51,10 @@ See "Provisioning access" below for how to grant a user access.
 4. **Browse** the selected snapshot via the folder tree on the left or
    the breadcrumb bar above the file grid — both stay in sync with each
    other and with the timeline (switching snapshots keeps you in the
-   same folder if it still exists there).
+   same folder if it still exists there). Partitions and LVM volumes get
+   their own icon, distinct from a plain folder; a Windows partition
+   shows its live drive letter (e.g. "2 (C:)") when the guest agent can
+   resolve it.
 5. **Download** — select one file for a direct download, or select
    multiple files/folders (or a single folder) to get a "Download as"
    dropdown offering `.zip`, `.tar.gz`, or `.tar.zst`.
