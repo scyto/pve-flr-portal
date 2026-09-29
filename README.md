@@ -15,46 +15,57 @@ top of Proxmox's existing API, without modifying Proxmox itself.
 See [`docs/plan.md`](docs/plan.md) for the full architecture/reference
 doc, [`TODO.md`](TODO.md) for open work, and
 [`CHANGELOG.md`](CHANGELOG.md) for what's shipped in each release.
+Also check [GitHub issues](https://github.com/treycentric/pve-flr-portal/issues) for outstanding work items.
 
-**What it does today:** browse and download files out of PBS backups
-(single file, or a `.zip`/`.tar.gz`/`.tar.zst` bundle), scrub across
-snapshots on a timeline, per-user PVE login (password or SSO/OIDC),
-colour themes, and **restore straight back into a running guest** via
-`qemu-guest-agent` — single file, whole directories, "original
-location" auto-resolved from the item's own path (including Windows
-drive-letter display, matched to the guest's real disk/partition
-layout), and a faster Direct Network Transfer path (HTTPS by default)
-for large content. Reads from one or more PBS storages; a partition or
-LVM volume PVE's file-restore helper can't mount (e.g. a foreign
-filesystem, or a member of a Windows striped/mirrored volume) is
-hidden automatically rather than shown as a dead end. See
-`CHANGELOG.md` for the version-by-version detail and `TODO.md` for
-what's left (mostly optional performance work and restore-path
-refinements) — this section deliberately doesn't pin a version number,
-since that goes stale the moment the next release ships.
+## Features
+- Browse and download files and folders out of PBS backups (single file,
+  or a `.zip`/`.tar.gz`/`.tar.zst` bundle)
+- Scrub across a timeline to pick a snapshot to work with. This allows
+  for quick comparisons of folder contents between two different
+  snapshots.
+- Authenticated using PVE login (password or SSO/OIDC). This app does not
+  manage its own credentials. All authentication and authorization is
+  controlled through PVE. See "Provisioning access" below for how to grant
+  a user access.
+- Light, dark, and Proxmox Dark color themes.
+- **Restore straight back into a running guest** via `qemu-guest-agent`
+  including single file, multiple files, and whole directories to the
+  original location (auto-resolved from the item's own path) or to a
+  location of the user's choosing (browse live guest drives and
+  directories or manually type a path). Restoration supports a few
+  different methods (support detected automatically):
+  - Chunk method using qeumu-guest-agent (slower). Useful for smaller
+    content.
+  - HTTP/HTTPS Direct Network Transfer path (faster). Preferable for
+    larger content or lots of files/directories.
+- Automatically resolves Windows drive-letter mapping to partitions for
+  display in the UI, matched to the guest's real disk/partition layout).
+- Supports the use of multiple PBS storage backents;
+- Hides partitions automatically that aren't readable or don't contain
+  supported filesystems. This also includes Windows striped/mirrored volumes.
 
-Auth is per-user PVE ticket login — there's no shared service token.
-See "Provisioning access" below for how to grant a user access.
+See `CHANGELOG.md` for the version-by-version detail and `TODO.md` for
+what's on the roadmap. 
 
-## Using it
+## Using the File Restore Portal
 
 1. **Log in** with your own PVE username/password (realm dropdown,
    optional "save username").
-2. **Task** (top right) picks which guest you're browsing — a
+2. **Task** (top right) picks which guest VM or container you're browsing — a
    filterable list of every guest with backups on the configured PBS
-   datastore.
-3. **The timeline** (bottom) is the point of the app: each dot is a
-   snapshot; click one to select it (the callout jumps to it), drag to
-   pan, use the zoom controls or a day with multiple snapshots to pick
-   between them. The center line marks whatever snapshot is currently
-   selected.
+   datastores. You will only see the ones for which you have been granted the
+   required roles via PVE.
+3. **The timeline** (bottom) is one of the main benefits of the app: each
+   dot is a snapshot; click one to select it (the callout jumps to it), drag
+   to pan, use the zoom controls or click a callout with multiple snapshots
+   to pick between them.
 4. **Browse** the selected snapshot via the folder tree on the left or
    the breadcrumb bar above the file grid — both stay in sync with each
    other and with the timeline (switching snapshots keeps you in the
-   same folder if it still exists there). Partitions and LVM volumes get
-   their own icon, distinct from a plain folder; a Windows partition
-   shows its live drive letter (e.g. "2 (C:)") when the guest agent can
-   resolve it.
+   same folder if it still exists there). Partitions, LVM volumes, and
+   filesystem roots get their own icon, distinct from a plain folder;
+   a Windows partition shows its live drive letter (e.g. "2 (C:)") when the
+   guest agent can resolve it.
 5. **Download** — select one file for a direct download, or select
    multiple files/folders (or a single folder) to get a "Download as"
    dropdown offering `.zip`, `.tar.gz`, or `.tar.zst`.
@@ -62,22 +73,28 @@ See "Provisioning access" below for how to grant a user access.
    guest via `qemu-guest-agent`, instead of downloading it. The button
    is only enabled for guests where the agent is reachable and your PVE
    account holds the separate restore grant (see "Restore-to-guest"
-   below); the confirmation dialog picks the destination directory -
-   "Original location" (resolved automatically from the item's own path
-   in the backup, when the app can confidently determine it), Browse, or
-   type one manually - and, where available, offers "restore metadata"
-   (modified time) and "verify" (checksum) for a single file - a
-   multi-file/directory restore already does both of those
-   automatically, not optional there. "Restore original owner/
-   permissions" is offered either way (Linux/BSD guests only - greyed
-   out for Windows, since NTFS ACLs can't be recovered through any
-   file-restore API Proxmox currently exposes; see "Restore-to-guest"
-   below). Large transfers use a Direct Network Transfer path
-   automatically when a data NIC is configured.
-7. **About** (user menu, top right) shows the running version and a
+   below); the confirmation modal dialog provides three options for
+   picking the destination directory:
+   - **Original location** (resolved automatically from the item's own path
+   in the backup, when the app can confidently determine it)
+   - **Browse**
+   - Manually typed path
+   Offers selectable options for "restore metadata" (modified time) and
+   "verify" (checksum) when restoring a single file. Multi-file/directory
+   restore already does both of those automatically (required).
+   "Restore original owner/permissions" is offered either way (for Linux/BSD
+   guests only - greyed out for Windows, since NTFS ACLs can't be recovered
+   through any file-restore API Proxmox currently exposes; see
+   "Restore-to-guest" below). Large transfers use a Direct Network Transfer
+   path automatically when a data NIC is configured for the application.
+7. **Restore Jobs Task** This allows for viewing the progress of running
+   or completed restore jobs.
+8. **Color Theme** Change the currently selected color theme used by the app
+   (stored in user's browser state).
+9. **About** (user menu, top right) shows the running version and a
    link back to this repo.
 
-## Running it
+## Running it Locally
 
 ```
 git clone https://github.com/treycentric/pve-flr-portal.git
@@ -247,7 +264,9 @@ needed on the portal's own side).
 
 ## Deployment
 
-**LXC on your PVE host (recommended).** Run on the PVE host itself:
+### LXC on your PVE host (Recommended)
+
+Run on the PVE host itself:
 
 ```
 bash deploy/lxc-create.sh
@@ -266,7 +285,7 @@ service user. It survives `git pull` redeploys and container reboots,
 but not a container recreate - see docs/plan.md §10 for what to
 preserve when moving/rebuilding the container.
 
-**Docker, mainly for local dev/testing:**
+### Docker, mainly for local dev/testing
 
 ```
 docker compose up --build
