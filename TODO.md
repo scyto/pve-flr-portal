@@ -34,11 +34,30 @@ commit.
   small LXC container) turned out to matter in practice, but Direct
   Network Transfer already fixed the bigger practical problem (upload
   speed) independently.
-- #26 — restore original owner/group/permissions (not just mtime) for
-  a multi-file/directory restore, via a companion manifest file
-  alongside the checksum one.
-- #20 — same ownership/permissions gap for the single-file restore
-  path.
+- #20 — **SHIPPED** for Linux/BSD: single-file restore now has its own
+  "Restore original owner/permissions" checkbox, sourced from a second
+  `file-restore/download?tar=1` call (confirmed live 2026-09-28 that
+  PVE's tar output carries real uid/gid/mode, unlike the JSON listing
+  API — docs/plan.md §7.5). **Windows ACLs confirmed infeasible** via
+  any Proxmox-exposed API (investigated 2026-09-28, docs/plan.md §7.5)
+  — neither tar nor zip has a field for an NTFS Security Descriptor,
+  and no other Proxmox API surfaces it either; the checkbox is disabled
+  for a Windows guest for exactly this reason. A real upstream Proxmox
+  gap, not something fixable from this app.
+- #26 — **SHIPPED** for Linux/BSD: same "Restore original owner/
+  permissions" checkbox now works for multi-file/directory restore too.
+  `restore_bundle.py`'s bundle builder now sources directory items via
+  `tar=1` instead of the old default zip (Windows guests still use zip
+  - Windows never needs uid/gid/mode, and zip's own per-entry timestamp
+  already covers mtime with no format switch needed) and copies real
+  uid/gid/mode/mtime onto each outgoing entry - no companion manifest
+  needed, PVE's own archive metadata carries it directly. **Also fixed
+  a separate, previously-unnoticed bug found while building this**:
+  multi-file/directory restore never actually preserved original
+  modified times despite the UI claiming it did (`TarInfo`/`ZipInfo`
+  defaulted to epoch/"now" - fixed unconditionally, independent of the
+  ownership checkbox). Windows ACLs remain infeasible, same reason as
+  #20.
 - #7 — `/api/download-bundle` (the plain browser download feature,
   separate from restore-to-guest) still buffers the whole archive in
   RAM; the streaming techniques #24 built are directly reusable there

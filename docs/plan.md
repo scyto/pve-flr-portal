@@ -896,10 +896,14 @@ confirmation offers two independent checkboxes, both defaulting **off**:
 - **Restore metadata** — corrected scope, confirmed against the actual
   API: `file-restore/list`'s response only ever includes `mtime` and
   `size` (docs/plan.md §3's documented schema — no `uid`/`gid`/`mode`
-  field exists anywhere in it), so this can only restore the original
-  **modified time**, not ownership or permissions as first sketched —
-  that data simply isn't exposed through this API at all, on any PVE
-  version. A follow-up `guest-exec` (`touch -d @<unix-ts>` on
+  field exists anywhere in it), so this checkbox can only restore the
+  original **modified time**, not ownership or permissions as first
+  sketched — that data isn't exposed through the *listing* API, on any
+  PVE version. (Ownership/permissions turned out to be recoverable a
+  different way — a second `file-restore/download?tar=1` call, not the
+  JSON listing API — see issue #20's real-world finding below, which is
+  its own separate "Restore original owner/permissions" checkbox, not
+  folded into this one.) A follow-up `guest-exec` (`touch -d @<unix-ts>` on
   Linux/BSD; PowerShell `(Get-Item).LastWriteTime = ...` on Windows,
   since `cmd` has no built-in for this) applies the `mtime` the
   file-restore listing already returned. Still answers "doesn't the
@@ -1094,10 +1098,14 @@ entry points at. Two reasons this matters, both raised in review:
     warning, "lands as root:root 0644" notice — no metadata/verify
     checkboxes shown at all, since there's no exec to run them with.
   - **`Unrestricted` also available:** same modal additionally shows
-    "Restore metadata" and "Verify" checkboxes (both off by default) —
-    checking either (or the content simply being too large for one
-    call) is what pulls this particular restore onto the exec-based
-    path; the user never has to know that distinction exists. The
+    "Restore metadata", "Verify", and "Restore original owner/
+    permissions" checkboxes (all off by default) — checking any of
+    them (or the content simply being too large for one call) is what
+    pulls this particular restore onto the exec-based path; the user
+    never has to know that distinction exists. "Restore original
+    owner/permissions" (issue #20) is disabled with an explanatory
+    tooltip for a Windows guest — see the real-world finding below for
+    why. The
     destination field is replaced by a small in-modal directory
     browser (`GET /api/restore-browse`, `backend/guest_browse.py`) —
     Up/Drives navigation, click a folder to descend, destination
@@ -1107,6 +1115,141 @@ entry points at. Two reasons this matters, both raised in review:
     itself needs the same `Unrestricted` grant (no dedicated QGA
     listing command), so it's simply absent, not merely disabled, when
     only `FileWrite` is held.
+
+    **Restore original owner/permissions, Linux/BSD (issue #20).
+    Real-world finding (2026-09-28): confirmed live against a real
+    Turnkey Linux guest that `file-restore/list`'s JSON is not the only
+    metadata source available — `file-restore/download?tar=1` wraps
+    even a single file's content in a real tar archive whose header
+    carries the actual original `uid`/`gid`/`mode`, for both a single
+    file and a directory (verified with a non-default owner: uid=1000/
+    gid=1000 came back correctly, matching a real non-root account, not
+    a tarfile-library default of 0/0).** `restore_runner.py`'s
+    `_fetch_source_ownership` opens a *second*, `tar=1` download of the
+    same `source_filepath` (the main content write still uses the
+    existing raw `tar=0` stream, unchanged) and reads only a bounded
+    16KB prefix — tar headers, including any GNU/PAX long-name
+    extension blocks, are small — to parse the first entry's header via
+    stdlib `tarfile`, never re-downloading the file's full content.
+    `_restore_ownership` then applies it via `chown`/`chmod` guest-exec
+    calls, the same `VM.GuestAgent.Unrestricted`-gated path
+    `_restore_mtime` already uses. A fetch/parse failure degrades to
+    "skip this cosmetic step" (logged, not a failed job) — same posture
+    as `_restore_mtime`'s own "no mtime to apply" case; once real values
+    ARE in hand, a `chown`/`chmod` failure raises and fails the job,
+    same as a failed mtime restore.
+
+    **Real-world finding (2026-09-28): `tar=1`'s output is not
+    consistently one format, and this bug hid from local testing for a
+    genuinely subtle reason.** A live single-file restore against a
+    real Turnkey Linux guest failed to determine ownership at all —
+    diagnostic logging showed the `tar=1` response starting with the
+    zstd magic number (`\x28\xb5\x2f\xfd`), fed straight into
+    `tarfile.open()` unmodified, which naturally failed ("truncated
+    header"). The exact same endpoint/parameter had returned a genuine
+    *plain*, uncompressed tar for a different file earlier in the same
+    investigation — so PVE's `tar=1` isn't reliably `.tar.zst` despite
+    the name suggesting it, and code consuming it must detect via the
+    magic number and handle either, never assume one. Fixed with
+    `_decompress_prefix` — checks for the magic number, and if present,
+    uses a *streaming* zstd reader (not a single-shot `decompress()`,
+    which needs either a known content size or a complete frame,
+    neither guaranteed by the deliberately-truncated 16KB prefix this
+    function reads).
+
+    **The regression test for this needed a second, more direct form,
+    for an equally subtle reason: Python 3.14 (this project's dev
+    environment) masked the bug entirely.** An initial end-to-end test
+    (a zstd-compressed fake tar fed through the full restore flow)
+    passed even with the fix *reverted* — confirmed live that Python
+    3.14's stdlib `tarfile.open()` auto-detects and transparently
+    decompresses zstd-framed input natively (new that release, per its
+    own new `compression.zstd` support), silently absorbing exactly the
+    bug this fix addresses. The Docker deployment target is Python 3.11
+    (this project's own `docker-compose.yml`/README testing note),
+    which has no such native support — the environment where the live
+    bug actually happened. Added a direct unit test of
+    `_decompress_prefix` itself (asserting it round-trips a real
+    zstd-compressed blob back to the original bytes) as the actual
+    regression guard, since it doesn't depend on tarfile's own auto-
+    detection and so can't be masked by which Python version runs the
+    suite — the end-to-end test is kept too, but only as an integration
+    check, not the thing proving this fix works.
+
+    **Windows ACLs: confirmed infeasible via any Proxmox-exposed API
+    today, not just untested (investigated 2026-09-28).** The NTFS
+    Security Descriptor survives intact inside a PBS backup (PBS backs
+    up VMs as a raw block image, not filesystem-aware, so nothing about
+    the guest's own metadata is discarded at backup time) — the loss
+    happens entirely in Proxmox's own file-restore helper, which only
+    ever emits `tar`/`zip`, and **neither archive format has a field
+    capable of representing a Windows Security Descriptor** (tar only
+    has Unix uid/gid/mode; zip's Unix extension only has DOS/Unix mode
+    bits). No other Proxmox-exposed API surfaces it either:
+    `file-restore/list`'s schema has no ACL field (§3), and
+    `qemu-guest-agent` only ever talks to a *live* running guest, never
+    a backup snapshot, so it can't be a channel for backup-sourced ACL
+    data. A Proxmox forum thread
+    ("PBS file backup and Windows ACL") shows a maintainer confirming
+    this is a known, bugzilla-tracked, unresolved gap in Proxmox's own
+    ecosystem broadly — not something specific to this app's restricted
+    API surface. The only two ways this could ever change: Proxmox adds
+    SD-awareness to the file-restore daemon itself (a genuine upstream
+    feature request, not patchable from outside — same category as
+    issue #79's Windows-RAID gap), or this app gains direct PBS/block-
+    image access, which would break the "never talks to PBS directly"
+    hard constraint and isn't worth it for this one feature. The
+    "Restore original owner/permissions" checkbox is disabled for a
+    Windows guest in the UI for exactly this reason, not merely
+    unimplemented.
+
+    **Multi-file/directory restore (issue #26) — shipped 2026-09-29,
+    same checkbox as #20.** `restore_bundle.py`'s bundle builder now
+    sources a directory item via `tar=1` instead of the old default zip
+    for any guest except Windows (Windows keeps zip — never needs
+    uid/gid/mode, and zip's own per-entry timestamp already covers
+    mtime with no format switch needed) and copies the real per-member
+    uid/gid/mode/mtime read from that tar onto the outgoing archive's
+    entries directly — no companion manifest file needed at all, unlike
+    the original design sketch; PVE's own archive metadata is the
+    manifest. A leaf item inside a bundle makes the same second
+    `fetch_source_metadata` call #20's single-file path does. mtime is
+    applied unconditionally whenever known; uid/gid/mode only when the
+    checkbox is checked (re-derived from `guest_os_family` inside
+    `build_bundle()` itself, not trusted from the caller alone — same
+    defense-in-depth as #20's job-creation-time gate).
+
+    **Real-world finding, folded into the same change: multi-file/
+    directory restore never actually preserved original modified
+    times, despite the restore modal's own copy claiming it did
+    ("Original modified times are preserved automatically").**
+    `_add_leaf_to_tar`/`_add_directory_entries_to_tar`/their zip
+    equivalents never set `TarInfo.mtime`/`ZipInfo.date_time` from the
+    source at all — every entry silently landed at `tarfile`'s bare
+    default (Unix epoch, 1970) or zipfile's default ("now", when a bare
+    name is given instead of a `ZipInfo`). No guest-exec step
+    compensated the way `_restore_mtime` does for single-file restore.
+    Found while reading this code to plan #26's implementation, not by
+    a live report — fixed in the same change since the same per-entry
+    metadata now being read for ownership purposes carries mtime nearly
+    for free. No extraction-side change was needed to *apply* it: GNU
+    `tar -xf` running as root (guest-exec's own qemu-guest-agent
+    process is already root-privileged on Linux — independently
+    confirmed by #20's `chown` calls working with no extra privilege
+    escalation) restores an archive's own mtime/uid/gid/mode
+    automatically on extraction, once the archive entries actually
+    carry them; likewise `Expand-Archive` on Windows restores a zip
+    entry's own `LastWriteTime`. Only the *build* side needed fixing.
+
+    **Second real-world finding, same investigation: a directory item's
+    `tar=1` download inherits the same zstd-inconsistency #20 already
+    found for a single file** — confirmed live that it can come back
+    either as a genuine plain tar or zstd-framed, for the same
+    endpoint/parameter. `restore_bundle.py`'s `_open_local_tar` detects
+    via the zstd magic number the same way `pve_client.
+    decompress_zstd_prefix` does for #20's bounded-prefix case, but
+    uses a full-file streaming reader instead, since every member has
+    to be read here, not just the first header.
 
     **"Original location" destination (issue #68).** A third segmented
     option alongside Browse/Manual entry, VM guests only (LXC never
